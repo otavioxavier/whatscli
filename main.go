@@ -10,14 +10,14 @@ import (
 
 	"codeberg.org/tslocum/cbind"
 	"github.com/gdamore/tcell/v2"
-	"github.com/normen/whatscli/config"
-	"github.com/normen/whatscli/messages"
+	"github.com/otavioxavier/whatscli/config"
+	"github.com/otavioxavier/whatscli/messages"
 	"github.com/rivo/tview"
 	"github.com/skratchdot/open-golang/open"
 	"github.com/zyedidia/clipboard"
 )
 
-var VERSION string = "v1.1.6"
+var VERSION string = "v1.1.6-mac1"
 
 var sndTxt string = ""
 var currentReceiver messages.Chat = messages.Chat{}
@@ -631,7 +631,7 @@ func getMessagesString(msgs []messages.Message) string {
 }
 
 // create a formatted string with regions based on message ID from a text message
-//TODO: optimize, use Sprintf etc
+// TODO: optimize, use Sprintf etc
 func getTextMessageString(msg *messages.Message) string {
 	colorMe := config.Config.Colors.ChatMe
 	colorContact := config.Config.Colors.ChatContact
@@ -745,4 +745,18 @@ func (u UiHandler) SetStatus(status messages.SessionStatus) {
 
 func (u UiHandler) GetWriter() io.Writer {
 	return textView
+}
+
+// GetViewport reports the current size of the message panel in terminal cells.
+// It falls back to a conservative size before the first draw (e.g. while the
+// login QR code is being requested).
+func (u UiHandler) GetViewport() (int, int) {
+	if textView == nil {
+		return 80, 24
+	}
+	_, _, width, height := textView.GetRect()
+	if width < 20 || height < 10 {
+		return 80, 24
+	}
+	return width, height
 }

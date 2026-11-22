@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/user"
 
 	"github.com/adrg/xdg"
 	"gopkg.in/ini.v1"
@@ -172,10 +171,12 @@ func GetSessionFilePath() string {
 	return GetHomeDir() + ".whatscli.session"
 }
 
-// gets the OS home dir with a path separator at the end
+// GetHomeDir gets the OS home dir with a path separator at the end.
+// os.UserHomeDir works on macOS without cgo and respects HOME overrides.
 func GetHomeDir() string {
-	usr, err := user.Current()
-	if err != nil {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
 	}
-	return usr.HomeDir + string(os.PathSeparator)
+	return home + string(os.PathSeparator)
 }

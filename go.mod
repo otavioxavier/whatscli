@@ -1,4 +1,4 @@
-module github.com/normen/whatscli
+module github.com/otavioxavier/whatscli
 
 go 1.25.0
 

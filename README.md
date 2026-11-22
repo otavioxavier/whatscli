@@ -2,6 +2,18 @@
 
 A command line interface for WhatsApp, based on [go-whatsmeow](https://github.com/tulir/whatsmeow) and [tview](https://github.com/rivo/tview)
 
+## Fork notes (otavioxavier)
+
+This fork keeps the project in Go and adds two macOS-focused improvements:
+
+- The login QR code is sized from the live message-panel dimensions. It uses
+  half-block characters (or Braille dots in small windows), is centered, and
+  never takes more than ~62% of the panel width / 70% of its height. The module
+  grid is preserved exactly, so the code remains scannable.
+- `make build-mac` produces a universal macOS binary (arm64 + x86_64) in
+  `dist/whatscli`, with cgo enabled for the SQLite store. Home directory lookup
+  uses `os.UserHomeDir()` for better macOS compatibility.
+
 ![whatscli-screenshot](/doc/screenshot.png?raw=true "WhatsCLI 0.6.5")
 
 ## Features

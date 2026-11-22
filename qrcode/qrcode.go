@@ -35,10 +35,34 @@ package qrcode
 import (
 	nbytes "bytes"
 	"fmt"
-	"github.com/mattn/go-colorable"
-	"github.com/skip2/go-qrcode"
 	"image/png"
 	"io"
+	"strings"
+
+	"github.com/mattn/go-colorable"
+	"github.com/skip2/go-qrcode"
+)
+
+// ANSI colors used to draw the QR code. Two separate SGR sequences are used
+// for mixed cells because tview's ANSIWriter stops parsing an SGR sequence at
+// the first 38/48 color selector.
+const (
+	ansiDark  = "\033[38;5;0m" // black foreground
+	ansiLight = "\033[48;5;7m" // light background
+	ansiReset = "\033[0m"
+)
+
+const (
+	// terminalQuietZone is the border (in modules) kept around the symbol.
+	// The QR library already provides four modules; we crop those and add a
+	// smaller border so the code stays compact in a terminal.
+	terminalQuietZone = 2
+
+	// The QR code never takes more than these fractions of the available
+	// terminal panel. This keeps it readable without dominating the screen.
+	maxWidthRatio  = 0.62
+	maxHeightRatio = 0.70
+	maxScale       = 2
 )
 
 type consoleColor string
@@ -105,27 +129,248 @@ type qrcodeTerminal struct {
 	level qrcodeRecoveryLevel
 }
 
-func (v *qrcodeTerminal) Get(content interface{}) (result *QRCodeString) {
-	var qr *qrcode.QRCode
-	var err error
-	if t, ok := content.(string); ok {
-		qr, err = qrcode.New(t, qrcode.RecoveryLevel(v.level))
-	} else if t, ok := content.([]byte); ok {
-		qr, err = qrcode.New(string(t), qrcode.RecoveryLevel(v.level))
-	}
-	if qr != nil && err == nil {
-		data := qr.Bitmap()
-		result = v.getQRCodeString(data)
-	}
-	return
+// Get renders the code at its compact size (one terminal cell per module).
+func (v *qrcodeTerminal) Get(content interface{}) *QRCodeString {
+	return v.GetFitted(content, 0, 0)
 }
 
-func (v *qrcodeTerminal) Get2(bytes []byte) (result *QRCodeString) {
-	data, err := parseQR(bytes)
-	if err == nil {
-		result = v.getQRCodeString(data)
+// GetFitted renders the code so it fits the given terminal panel (in cells).
+// It uses half-block characters (two QR rows per terminal row) and picks the
+// largest integer scale that still leaves room for the rest of the UI.
+func (v *qrcodeTerminal) GetFitted(content interface{}, maxWidth, maxHeight int) *QRCodeString {
+	modules, ok := v.symbol(content, v.level)
+	if !ok {
+		return nil
 	}
-	return
+
+	base := len(modules) + 2*terminalQuietZone
+	baseRows := (base + 1) / 2
+
+	// On very small terminals, prefer a lower error-correction level: that
+	// produces a smaller symbol instead of distorting the QR code.
+	if maxWidth > 0 && maxHeight > 0 && (base > maxWidth || baseRows > maxHeight) {
+		if smaller, ok := v.symbol(content, QRCodeRecoveryLevels.Low); ok {
+			smallBase := len(smaller) + 2*terminalQuietZone
+			if smallBase < base {
+				modules = smaller
+				base = smallBase
+				baseRows = (base + 1) / 2
+			}
+		}
+	}
+
+	scale := 1
+	if maxWidth > 0 && maxHeight > 0 {
+		limitW := int(float64(maxWidth) * maxWidthRatio)
+		limitH := int(float64(maxHeight) * maxHeightRatio)
+		if limitW < base {
+			limitW = base
+		}
+		if limitH < baseRows {
+			limitH = baseRows
+		}
+		scale = limitW / base
+		if heightScale := limitH / baseRows; heightScale < scale {
+			scale = heightScale
+		}
+		if scale > maxScale {
+			scale = maxScale
+		}
+		if scale < 1 {
+			scale = 1
+		}
+	}
+
+	size := base * scale
+	if maxWidth > 0 && maxHeight > 0 &&
+		(float64(size) > float64(maxWidth)*maxWidthRatio ||
+			float64(baseRows*scale) > float64(maxHeight)*maxHeightRatio) {
+		// Keep the code compact: Braille dots store 2x4 modules per cell,
+		// roughly halving both dimensions compared to half-block characters.
+		brailleWidth := (base + 1) / 2
+		brailleHeight := (base + 3) / 4
+		if brailleWidth <= maxWidth && brailleHeight <= maxHeight {
+			return v.renderBraille(modules, maxWidth)
+		}
+	}
+
+	return v.render(modules, scale, maxWidth)
+}
+
+func (v *qrcodeTerminal) symbol(content interface{}, level qrcodeRecoveryLevel) ([][]bool, bool) {
+	var qr *qrcode.QRCode
+	var err error
+	switch t := content.(type) {
+	case string:
+		qr, err = qrcode.New(t, qrcode.RecoveryLevel(level))
+	case []byte:
+		qr, err = qrcode.New(string(t), qrcode.RecoveryLevel(level))
+	}
+	if err != nil || qr == nil {
+		return nil, false
+	}
+	return cropQuietZone(qr.Bitmap()), true
+}
+
+// cropQuietZone removes the four-module border added by go-qrcode.
+func cropQuietZone(bitmap [][]bool) [][]bool {
+	const libraryQuietZone = 4
+	if len(bitmap) <= 2*libraryQuietZone {
+		return bitmap
+	}
+	size := len(bitmap) - 2*libraryQuietZone
+	modules := make([][]bool, size)
+	for y := 0; y < size; y++ {
+		modules[y] = make([]bool, size)
+		copy(modules[y], bitmap[y+libraryQuietZone][libraryQuietZone:libraryQuietZone+size])
+	}
+	return modules
+}
+
+// moduleGrid expands the QR modules by scale and adds the quiet zone.
+func moduleGrid(modules [][]bool, scale int) [][]bool {
+	quiet := terminalQuietZone * scale
+	size := len(modules)*scale + 2*quiet
+	grid := make([][]bool, size)
+	for y := range grid {
+		grid[y] = make([]bool, size)
+	}
+	for y, row := range modules {
+		for x, dark := range row {
+			if !dark {
+				continue
+			}
+			for dy := 0; dy < scale; dy++ {
+				for dx := 0; dx < scale; dx++ {
+					grid[quiet+y*scale+dy][quiet+x*scale+dx] = true
+				}
+			}
+		}
+	}
+	return grid
+}
+
+// render expands the modules by scale, packs two module rows into each
+// terminal row using half-block characters and centers the result horizontally.
+func (v *qrcodeTerminal) render(modules [][]bool, scale, viewportWidth int) *QRCodeString {
+	grid := moduleGrid(modules, scale)
+	size := len(grid)
+
+	padding := 0
+	if viewportWidth > size {
+		padding = (viewportWidth - size) / 2
+	}
+	prefix := strings.Repeat(" ", padding)
+
+	lines := make([]string, 0, (size+1)/2)
+	for y := 0; y < size; y += 2 {
+		var line strings.Builder
+		line.WriteString(prefix)
+		for x := 0; x < size; {
+			char, colors := qrCell(grid[y][x], y+1 < size && grid[y+1][x])
+			run := 1
+			for x+run < size {
+				nextChar, nextColors := qrCell(grid[y][x+run], y+1 < size && grid[y+1][x+run])
+				if nextColors != colors || nextChar != char {
+					break
+				}
+				run++
+			}
+			line.WriteString(colors)
+			line.WriteString(strings.Repeat(char, run))
+			line.WriteString(ansiReset)
+			x += run
+		}
+		lines = append(lines, line.String())
+	}
+
+	result := QRCodeString(strings.Join(lines, "\n"))
+	return &result
+}
+
+// qrCell maps a pair of module rows to one terminal cell.
+func qrCell(top, bottom bool) (string, string) {
+	switch {
+	case top && bottom:
+		return "█", ansiDark
+	case top:
+		return "▀", ansiDark + ansiLight
+	case bottom:
+		return "▄", ansiDark + ansiLight
+	default:
+		return " ", ansiLight
+	}
+}
+
+// renderBraille packs a 2x4 module block into one Braille character. The
+// dots are the four rows (1,2,3,7 on the left and 4,5,6,8 on the right).
+// This mode is only used when even the compact half-block rendering would
+// not fit in the terminal window.
+func (v *qrcodeTerminal) renderBraille(modules [][]bool, viewportWidth int) *QRCodeString {
+	grid := moduleGrid(modules, 1)
+	size := len(grid)
+	cellsWide := (size + 1) / 2
+	cellsHigh := (size + 3) / 4
+
+	padding := 0
+	if viewportWidth > cellsWide {
+		padding = (viewportWidth - cellsWide) / 2
+	}
+	prefix := strings.Repeat(" ", padding)
+
+	dot := func(x, y int) bool {
+		return x < size && y < size && grid[y][x]
+	}
+
+	lines := make([]string, 0, cellsHigh)
+	for cy := 0; cy < cellsHigh; cy++ {
+		var line strings.Builder
+		line.WriteString(prefix)
+		for cx := 0; cx < cellsWide; cx++ {
+			x, y := 2*cx, 4*cy
+			bits := 0
+			if dot(x, y) {
+				bits |= 1 << 0
+			}
+			if dot(x, y+1) {
+				bits |= 1 << 1
+			}
+			if dot(x, y+2) {
+				bits |= 1 << 2
+			}
+			if dot(x+1, y) {
+				bits |= 1 << 3
+			}
+			if dot(x+1, y+1) {
+				bits |= 1 << 4
+			}
+			if dot(x+1, y+2) {
+				bits |= 1 << 5
+			}
+			if dot(x, y+3) {
+				bits |= 1 << 6
+			}
+			if dot(x+1, y+3) {
+				bits |= 1 << 7
+			}
+			line.WriteString(ansiDark)
+			line.WriteString(ansiLight)
+			line.WriteRune(rune(0x2800 + bits))
+			line.WriteString(ansiReset)
+		}
+		lines = append(lines, line.String())
+	}
+
+	result := QRCodeString(strings.Join(lines, "\n"))
+	return &result
+}
+
+func (v *qrcodeTerminal) Get2(bytes []byte) *QRCodeString {
+	data, err := parseQR(bytes)
+	if err != nil {
+		return nil
+	}
+	return v.render(cropQuietZone(data), 1, 0)
 }
 
 func New2(front, back consoleColor, level qrcodeRecoveryLevel) *qrcodeTerminal {
@@ -138,46 +383,19 @@ func New() *qrcodeTerminal {
 	return New2(front, back, level)
 }
 
-func (v *qrcodeTerminal) getQRCodeString(data [][]bool) (result *QRCodeString) {
-	str := ""
-	for ir, row := range data {
-		lr := len(row)
-		if ir == 0 || ir == 1 || ir == 2 ||
-			ir == lr-1 || ir == lr-2 || ir == lr-3 {
-			continue
-		}
-		for ic, col := range row {
-			lc := len(data)
-			if ic == 0 || ic == 1 || ic == 2 ||
-				ic == lc-1 || ic == lc-2 || ic == lc-3 {
-				continue
-			}
-			if col {
-				str += fmt.Sprint(v.front)
-			} else {
-				str += fmt.Sprint(v.back)
-			}
-		}
-		str += fmt.Sprintln()
-	}
-	obj := QRCodeString(str)
-	result = &obj
-	return
-}
-
 func parseQR(bytes []byte) (data [][]bool, err error) {
 	r := nbytes.NewReader(bytes)
 	img, err := png.Decode(r)
 	if err == nil {
 		rect := img.Bounds()
 		mx, my := rect.Max.X, rect.Max.Y
-		data = make([][]bool, mx)
-		for x := 0; x < mx; x++ {
-			data[x] = make([]bool, my)
-			for y := 0; y < my; y++ {
+		data = make([][]bool, my)
+		for y := 0; y < my; y++ {
+			data[y] = make([]bool, mx)
+			for x := 0; x < mx; x++ {
 				c := img.At(x, y)
 				r, _, _, _ := c.RGBA()
-				data[x][y] = r == 0
+				data[y][x] = r == 0
 			}
 		}
 	}

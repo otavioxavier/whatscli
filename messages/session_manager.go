@@ -16,8 +16,8 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/gen2brain/beeep"
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
-	"github.com/normen/whatscli/config"
-	"github.com/normen/whatscli/qrcode"
+	"github.com/otavioxavier/whatscli/config"
+	"github.com/otavioxavier/whatscli/qrcode"
 	"github.com/rivo/tview"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -206,7 +206,8 @@ func (sm *SessionManager) loginWithQRCode(client *whatsmeow.Client) error {
 		case "code":
 			terminal := qrcode.New()
 			terminal.SetOutput(tview.ANSIWriter(sm.uiHandler.GetWriter()))
-			terminal.Get(evt.Code).Print()
+			width, height := sm.uiHandler.GetViewport()
+			terminal.GetFitted(evt.Code, width, height).Print()
 		case "success":
 			sm.uiHandler.PrintText("Successfully logged in!")
 			sm.StatusChannel <- StatusMsg{true, nil}

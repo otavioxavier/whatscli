@@ -1,4 +1,4 @@
-//this package manages the messages
+// this package manages the messages
 package messages
 
 import (
@@ -18,6 +18,9 @@ type UiMessageHandler interface {
 	SetStatus(SessionStatus)
 	OpenFile(string)
 	GetWriter() io.Writer
+	// GetViewport returns the size (in cells) of the message panel, used to
+	// scale the login QR code to the current terminal window.
+	GetViewport() (int, int)
 }
 
 // data struct for current session status
