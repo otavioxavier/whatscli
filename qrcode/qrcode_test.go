@@ -43,6 +43,41 @@ func TestFittedQRCode(t *testing.T) {
 	}
 }
 
+// A normal 80x24 terminal must use the large, scannable half-block rendering.
+// Braille is only a last resort for windows that cannot fit the half-blocks.
+func TestDefaultTerminalUsesHalfBlocks(t *testing.T) {
+	code := New().GetFitted(sampleCode, 80, 24)
+	if code == nil {
+		t.Fatal("failed to render QR code")
+	}
+	for _, line := range strings.Split(string(*code), "\n") {
+		for _, r := range visibleLine(line) {
+			if r >= 0x2800 && r <= 0x28ff {
+				t.Fatal("default terminal used Braille instead of half-block characters")
+			}
+		}
+	}
+}
+
+// The QR must be drawn with pure black on pure white so phone cameras can
+// lock onto it; a dim grey background made it impossible to scan.
+func TestHighContrastColors(t *testing.T) {
+	code := New().GetFitted(sampleCode, 80, 24)
+	if code == nil {
+		t.Fatal("failed to render QR code")
+	}
+	raw := string(*code)
+	if !strings.Contains(raw, ansiDark) {
+		t.Errorf("missing pure black foreground %q", ansiDark)
+	}
+	if !strings.Contains(raw, ansiLight) {
+		t.Errorf("missing pure white background %q", ansiLight)
+	}
+	if strings.Contains(raw, "\033[48;5;7m") {
+		t.Error("QR still uses the old grey background")
+	}
+}
+
 func TestHalfBlocksPreserveModules(t *testing.T) {
 	const viewportWidth = 120
 	terminal := New()

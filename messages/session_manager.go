@@ -220,6 +220,89 @@ func (sm *SessionManager) loginWithQRCode(client *whatsmeow.Client) error {
 	return errors.New("QR code channel closed without success")
 }
 
+// loginWithPhone links WhatsApp using a phone number instead of a QR code.
+// The phone displays an 8-character code that the user enters in the app.
+func (sm *SessionManager) loginWithPhone(phone string) error {
+	// PairPhone only accepts digits and expects an international number.
+	var digits strings.Builder
+	for _, r := range phone {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	number := digits.String()
+	if len(number) <= 6 {
+		return fmt.Errorf("invalid phone number %q: include the country code, e.g. 5511999999999", phone)
+	}
+	if number[0] == '0' {
+		return fmt.Errorf("invalid phone number %q: use international format without a leading 0", phone)
+	}
+
+	client, err := sm.getConnection()
+	if err != nil {
+		return fmt.Errorf("failed to create WhatsApp connection: %v", err)
+	}
+	if client.IsConnected() {
+		client.Disconnect()
+		sm.StatusChannel <- StatusMsg{false, nil}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if client.Store == nil || client.Store.ID != nil {
+		return errors.New("a session is already linked; run /reset first to link a new phone number")
+	}
+
+	// The QR channel must be set up before Connect(). PairPhone also needs an
+	// established websocket, which is guaranteed by the first channel item.
+	qrChan, err := client.GetQRChannel(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to initialize pairing channel: %v", err)
+	}
+	if err = client.Connect(); err != nil {
+		return fmt.Errorf("error connecting to WhatsApp: %v", err)
+	}
+
+	select {
+	case first, ok := <-qrChan:
+		if !ok {
+			return errors.New("pairing channel closed before the connection was ready")
+		}
+		switch first.Event {
+		case "error":
+			return fmt.Errorf("pairing failed: %v", first.Error)
+		case "timeout", "err-unexpected-state":
+			return fmt.Errorf("pairing failed: %s (try again)", first.Event)
+		}
+	case <-time.After(2 * time.Second):
+		// Some versions take slightly longer to emit the first code.
+	}
+
+	code, err := client.PairPhone(context.Background(), number, true, whatsmeow.PairClientChrome, "Chrome (macOS)")
+	if err != nil {
+		return fmt.Errorf("failed to request pairing code: %v", err)
+	}
+	sm.uiHandler.PrintText("Enter this code in WhatsApp: Linked devices -> Link a device -> Link with phone number -> " + code)
+
+	// Keep draining the channel: it must not fill up while the phone confirms.
+	for evt := range qrChan {
+		switch evt.Event {
+		case "code":
+			// QR codes are irrelevant for phone pairing; ignore them.
+		case "success":
+			sm.uiHandler.PrintText("Successfully logged in!")
+			sm.StatusChannel <- StatusMsg{true, nil}
+			go sm.loadRecentChats()
+			return nil
+		case "error":
+			return fmt.Errorf("pairing failed: %v", evt.Error)
+		case "timeout":
+			return errors.New("pairing timed out; run /connectphone again")
+		default:
+			sm.uiHandler.PrintText("Pairing event: " + evt.Event)
+		}
+	}
+	return errors.New("pairing channel closed without success")
+}
+
 func (sm *SessionManager) loadRecentChats() {
 	if sm.client == nil || !sm.client.IsConnected() {
 		sm.uiHandler.PrintError(errors.New("not connected to WhatsApp"))
@@ -362,6 +445,17 @@ func (sm *SessionManager) execCommand(command Command) {
 		if err != nil {
 			sm.uiHandler.PrintError(fmt.Errorf("WhatsApp connection failed: %v", err))
 			sm.uiHandler.PrintText("Try using /reset to completely reset the connection")
+		} else {
+			sm.uiHandler.PrintText("Successfully connected to WhatsApp")
+		}
+	case "connectphone", "phone":
+		if !checkParam(command.Params, 1) {
+			sm.printCommandUsage("connectphone", "<number>")
+			return
+		}
+		err := sm.loginWithPhone(strings.Join(command.Params, " "))
+		if err != nil {
+			sm.uiHandler.PrintError(fmt.Errorf("phone linking failed: %v", err))
 		} else {
 			sm.uiHandler.PrintText("Successfully connected to WhatsApp")
 		}

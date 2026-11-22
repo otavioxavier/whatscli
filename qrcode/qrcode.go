@@ -47,8 +47,8 @@ import (
 // for mixed cells because tview's ANSIWriter stops parsing an SGR sequence at
 // the first 38/48 color selector.
 const (
-	ansiDark  = "\033[38;5;0m" // black foreground
-	ansiLight = "\033[48;5;7m" // light background
+	ansiDark  = "\033[38;5;0m"  // pure black foreground
+	ansiLight = "\033[48;5;15m" // pure white background (max contrast)
 	ansiReset = "\033[0m"
 )
 
@@ -182,11 +182,10 @@ func (v *qrcodeTerminal) GetFitted(content interface{}, maxWidth, maxHeight int)
 	}
 
 	size := base * scale
-	if maxWidth > 0 && maxHeight > 0 &&
-		(float64(size) > float64(maxWidth)*maxWidthRatio ||
-			float64(baseRows*scale) > float64(maxHeight)*maxHeightRatio) {
-		// Keep the code compact: Braille dots store 2x4 modules per cell,
-		// roughly halving both dimensions compared to half-block characters.
+	if maxWidth > 0 && maxHeight > 0 && (size > maxWidth || baseRows*scale > maxHeight) {
+		// Only fall back to Braille when the scannable half-block rendering
+		// cannot fit at all. Braille modules are much smaller on screen, so
+		// using it by default made the code hard to scan.
 		brailleWidth := (base + 1) / 2
 		brailleHeight := (base + 3) / 4
 		if brailleWidth <= maxWidth && brailleHeight <= maxHeight {

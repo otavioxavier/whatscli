@@ -4,12 +4,20 @@ A command line interface for WhatsApp, based on [go-whatsmeow](https://github.co
 
 ## Fork notes (otavioxavier)
 
-This fork keeps the project in Go and adds two macOS-focused improvements:
+This fork keeps the project in Go and adds macOS-focused improvements:
 
 - The login QR code is sized from the live message-panel dimensions. It uses
-  half-block characters (or Braille dots in small windows), is centered, and
-  never takes more than ~62% of the panel width / 70% of its height. The module
-  grid is preserved exactly, so the code remains scannable.
+  large half-block characters (Braille only as a last resort for tiny windows),
+  is centered, and never takes more than ~62% of the panel width / 70% of its
+  height. The module grid is preserved exactly and it is drawn in pure black on
+  pure white for maximum contrast, so phone cameras can scan it reliably.
+- `Ctrl+C` quits cleanly (restores the terminal and disconnects), as do the
+  existing quit key and `/quit` command. `SIGINT`/`SIGTERM` are handled too.
+- `/connectphone <number>` (alias `/phone`) links WhatsApp by phone number
+  instead of scanning a QR code. Use the international format, e.g.
+  `/connectphone 5511999999999`, then enter the 8-character code shown in
+  WhatsApp under *Linked devices → Link a device → Link with phone number*.
+  Run `/reset` first if a session is already linked.
 - `make build-mac` produces a universal macOS binary (arm64 + x86_64) in
   `dist/whatscli`, with cgo enabled for the SQLite store. Home directory lookup
   uses `os.UserHomeDir()` for better macOS compatibility.

@@ -4,8 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"codeberg.org/tslocum/cbind"
@@ -17,7 +21,7 @@ import (
 	"github.com/zyedidia/clipboard"
 )
 
-var VERSION string = "v1.1.6-mac1"
+var VERSION string = "v1.1.6-mac2"
 
 var sndTxt string = ""
 var currentReceiver messages.Chat = messages.Chat{}
@@ -35,6 +39,8 @@ var app *tview.Application
 var sessionManager *messages.SessionManager
 
 var keyBindings *cbind.Configuration
+
+var quitOnce sync.Once
 
 var uiHandler messages.UiMessageHandler
 
@@ -126,6 +132,17 @@ func main() {
 		PrintError(err)
 	}
 	LoadShortcuts()
+
+	// Also stop cleanly when the process receives SIGINT/SIGTERM (e.g. Ctrl+C
+	// before tcell has put the terminal in raw mode, or "kill" from a script).
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		for range signals {
+			handleQuit(nil)
+		}
+	}()
+
 	app.Run()
 }
 
@@ -237,8 +254,14 @@ func safeReadClipboard() (clip string, err error) {
 }
 
 func handleQuit(ev *tcell.EventKey) *tcell.EventKey {
-	sessionManager.CommandChannel <- messages.Command{"disconnect", nil}
-	app.Stop()
+	quitOnce.Do(func() {
+		// Non-blocking send: a signal can arrive while the manager is busy.
+		select {
+		case sessionManager.CommandChannel <- messages.Command{"disconnect", nil}:
+		default:
+		}
+		app.Stop()
+	})
 	return nil
 }
 
@@ -352,6 +375,9 @@ func LoadShortcuts() {
 	if err := keyBindings.Set(config.Config.Keymap.CommandQuit, handleQuit); err != nil {
 		PrintErrorMsg("command_quit:", err)
 	}
+	// Ctrl+C is handled as a normal key by tcell, so it works like the
+	// configured quit binding instead of only killing the process.
+	keyBindings.SetKey(tcell.ModCtrl, tcell.KeyCtrlC, handleQuit)
 	if err := keyBindings.Set(config.Config.Keymap.CommandHelp, handleHelp); err != nil {
 		PrintErrorMsg("command_help:", err)
 	}
@@ -409,7 +435,7 @@ func PrintHelp() {
 	fmt.Fprintln(textView, "[::b] Up/Down[::-] = Scroll history/chats")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.SwitchPanels, "[::-] = Switch input/chats")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.FocusMessages, "[::-] = Focus message panel")
-	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.CommandQuit, "[::-] = Exit app")
+	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.CommandQuit, "[::-] or [::b]Ctrl+C[::-] = Exit app")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::-]Message panel[-::-]")
 	fmt.Fprintln(textView, "[::b] Up/Down[::-] = select message")
@@ -433,6 +459,7 @@ func PrintCommands() {
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::-]Global[-::-]")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"connect [::-]or[::b]", config.Config.Keymap.CommandConnect, "[::-] = (Re)Connect to server")
+	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"connectphone[::-] <number>  = Link by phone number (code in app)")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"disconnect[::-]  = Close the connection")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"logout[::-]  = Remove login data from computer")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"reset[::-]  = Remove stored session and reconnect cleanly")
@@ -481,8 +508,7 @@ func EnterCommand(key tcell.Key) {
 		return
 	}
 	if sndTxt == cmdPrefix+"quit" {
-		sessionManager.CommandChannel <- messages.Command{"disconnect", nil}
-		app.Stop()
+		handleQuit(nil)
 		return
 	}
 	if strings.HasPrefix(sndTxt, cmdPrefix) {
